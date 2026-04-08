@@ -1,0 +1,15 @@
+version = 1
+revision = 1
+
+[[package]]
+name = "legacy_data_env"
+version = "0.1.0"
+source = { virtual = true }
+
+[[package]]
+name = "fastapi"
+version = "0.100.0"
+
+[[package]]
+name = "uvicorn"
+version = "0.22.0"
