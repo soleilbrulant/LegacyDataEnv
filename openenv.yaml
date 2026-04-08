@@ -1,0 +1,4 @@
+name: legacy-data-env
+description: "A chaotic, legacy SQLite database simulation for training AI agents in DataOps and Schema Migration."
+version: "1.0.0"
+entrypoint: envs.legacy_data.env:LegacyDataEnvironment
