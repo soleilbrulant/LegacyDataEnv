@@ -69,10 +69,11 @@ class LegacyDataEnvironment:
                     self.conn.commit()
                     data = []
                 obs = LegacyObservation(success=True, data=data)
-                return StepResult(observation=obs, reward=0.0, done=False)
+                # Changed 0.0 to 0.01 for strict validation
+                return StepResult(observation=obs, reward=0.01, done=False)
             except Exception as e:
                 obs = LegacyObservation(success=False, error_message=str(e))
-                return StepResult(observation=obs, reward=0.0, done=False)
+                return StepResult(observation=obs, reward=0.01, done=False)
         
         elif action_type == "submit_solution":
             reward = self._grade_task(answer)
@@ -80,24 +81,25 @@ class LegacyDataEnvironment:
             return StepResult(observation=obs, reward=reward, done=True)
         
         obs = LegacyObservation(success=False, error_message="Invalid action")
-        return StepResult(observation=obs, reward=0.0, done=False)
+        return StepResult(observation=obs, reward=0.01, done=False)
 
     def _grade_task(self, answer: str) -> float:
         cursor = self.conn.cursor()
         try:
             if self.task_level == "easy":
-                return 1.0 if answer and ("3450.75" in answer) else 0.0
+                # Changed 1.0 to 0.99 and 0.0 to 0.01
+                return 0.99 if answer and ("3450.75" in answer) else 0.01
             elif self.task_level == "medium":
                 cursor.execute("SELECT COUNT(*) FROM inventory;"); rows = cursor.fetchone()[0]
                 cursor.execute("SELECT SUM(stock_count) FROM inventory;"); stock = cursor.fetchone()[0]
-                return 1.0 if (rows == 2 and stock == 50) else (0.5 if rows == 2 else 0.0)
+                return 0.99 if (rows == 2 and stock == 50) else (0.5 if rows == 2 else 0.01)
             elif self.task_level == "hard":
                 cursor.execute("PRAGMA table_info(transactions);"); cols = cursor.fetchall()
                 type_ok = any('TEXT' in c[2].upper() for c in cols if c[1] == 'transaction_id')
                 cursor.execute("SELECT COUNT(*) FROM transactions;"); count_ok = cursor.fetchone()[0] == 2
-                return 1.0 if (type_ok and count_ok) else (0.5 if type_ok else 0.0)
-        except: return 0.0
-        return 0.0
+                return 0.99 if (type_ok and count_ok) else (0.5 if type_ok else 0.01)
+        except: return 0.01
+        return 0.01
 
 # --- FASTAPI SERVER ---
 app = FastAPI()
@@ -127,7 +129,3 @@ async def step(request: Request):
     result = env.step(data)
     # Safely convert to dict for Phase 1 API
     return result.dict() if hasattr(result, "dict") else result
-
-@app.get("/state")
-def state():
-    return {"episode_id": env.episode_id, "step_count": env.step_count}
