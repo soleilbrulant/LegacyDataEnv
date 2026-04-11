@@ -51,35 +51,40 @@ class LegacyDataEnvironment:
             feedback=f"Legacy DB connected. Task level: {task_level}. You may begin executing SQL."
         )
 
-    def step(self, action: LegacyAction) -> StepResult:
-        """The core loop. Executes AI actions safely."""
+    def step(self, action_data):
         self.step_count += 1
         
-        if action.action_type == "execute_sql":
+        # --- THE PHASE 2 FIX ---
+        # If inference.py passes a Pydantic model, convert it to a dict safely.
+        if hasattr(action_data, "dict"):
+            action_data = action_data.dict()
+        elif hasattr(action_data, "model_dump"): 
+            action_data = action_data.model_dump()
+            
+        action_type = action_data.get("action_type")
+        sql_query = action_data.get("sql_query", "")
+        answer = action_data.get("answer", "")
+
+        if action_type == "execute_sql":
             try:
                 cursor = self.conn.cursor()
-                cursor.execute("PRAGMA foreign_keys = ON;") 
-                cursor.execute(action.sql_query)
-                
-                if action.sql_query.strip().upper().startswith("SELECT"):
+                cursor.execute("PRAGMA foreign_keys = ON;")
+                cursor.execute(sql_query)
+                if sql_query.strip().upper().startswith("SELECT"):
                     columns = [col[0] for col in cursor.description] if cursor.description else []
                     data = [dict(zip(columns, row)) for row in cursor.fetchall()]
                 else:
                     self.conn.commit()
                     data = []
-                    
-                obs = LegacyObservation(success=True, data=data)
-                return StepResult(observation=obs, reward=0.0, done=False)
-                
-            except sqlite3.Error as e:
-                obs = LegacyObservation(success=False, error_message=f"SQL Engine Error: {str(e)}")
-                return StepResult(observation=obs, reward=0.0, done=False)
-                
-        elif action.action_type == "submit_solution":
-            reward = self._grade_task(action.answer)
-            obs = LegacyObservation(success=True, feedback=f"Episode terminated. Final Score: {reward}")
-            return StepResult(observation=obs, reward=reward, done=True)
-
+                return {"observation": {"success": True, "data": data}, "reward": 0.0, "done": False}
+            except Exception as e:
+                return {"observation": {"success": False, "error_message": str(e)}, "reward": 0.0, "done": False}
+        
+        elif action_type == "submit_solution":
+            reward = self._grade_task(answer)
+            return {"observation": {"success": True, "feedback": f"Done. Score: {reward}"}, "reward": reward, "done": True}
+        
+        return {"observation": {"success": False, "error_message": "Invalid action"}, "reward": 0.0, "done": False}
     def state(self) -> State:
         return State(episode_id=self.episode_id, step_count=self.step_count)
 
