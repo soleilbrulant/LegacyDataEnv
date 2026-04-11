@@ -3,6 +3,10 @@ from typing import Any, Optional
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 
+# Import the official OpenEnv types
+from openenv.core.client_types import StepResult
+from .models import LegacyObservation
+
 # --- THE ENGINE ---
 class LegacyDataEnvironment:
     def __init__(self):
@@ -33,20 +37,25 @@ class LegacyDataEnvironment:
         if self.conn: self.conn.close()
         self.conn = sqlite3.connect(self.db_path)
         self._setup_legacy_db()
-        return {"success": True, "feedback": f"Connected. Level: {task_level}"}
+        # Return an object for Phase 2
+        return LegacyObservation(success=True, feedback=f"Connected. Level: {task_level}")
 
     def step(self, action_data):
         self.step_count += 1
         
-        # --- THE PHASE 2 FIX ---
+        # Safely handle inputs (Pydantic models OR dicts)
         if hasattr(action_data, "dict"):
-            action_data = action_data.dict()
+            action_dict = action_data.dict()
         elif hasattr(action_data, "model_dump"): 
-            action_data = action_data.model_dump()
+            action_dict = action_data.model_dump()
+        elif isinstance(action_data, dict):
+            action_dict = action_data
+        else:
+            action_dict = {}
             
-        action_type = action_data.get("action_type")
-        sql_query = action_data.get("sql_query", "")
-        answer = action_data.get("answer", "")
+        action_type = action_dict.get("action_type")
+        sql_query = action_dict.get("sql_query", "")
+        answer = action_dict.get("answer", "")
 
         if action_type == "execute_sql":
             try:
@@ -59,15 +68,19 @@ class LegacyDataEnvironment:
                 else:
                     self.conn.commit()
                     data = []
-                return {"observation": {"success": True, "data": data}, "reward": 0.0, "done": False}
+                obs = LegacyObservation(success=True, data=data)
+                return StepResult(observation=obs, reward=0.0, done=False)
             except Exception as e:
-                return {"observation": {"success": False, "error_message": str(e)}, "reward": 0.0, "done": False}
+                obs = LegacyObservation(success=False, error_message=str(e))
+                return StepResult(observation=obs, reward=0.0, done=False)
         
         elif action_type == "submit_solution":
             reward = self._grade_task(answer)
-            return {"observation": {"success": True, "feedback": f"Done. Score: {reward}"}, "reward": reward, "done": True}
+            obs = LegacyObservation(success=True, feedback=f"Done. Score: {reward}")
+            return StepResult(observation=obs, reward=reward, done=True)
         
-        return {"observation": {"success": False, "error_message": "Invalid action"}, "reward": 0.0, "done": False}
+        obs = LegacyObservation(success=False, error_message="Invalid action")
+        return StepResult(observation=obs, reward=0.0, done=False)
 
     def _grade_task(self, answer: str) -> float:
         cursor = self.conn.cursor()
@@ -100,7 +113,9 @@ async def reset(request: Request):
         data = await request.json() if body else {}
     except:
         data = {}
-    return env.reset(task_level=data.get("task_level", "easy"))
+    result = env.reset(task_level=data.get("task_level", "easy"))
+    # Safely convert to dict for Phase 1 API
+    return result.dict() if hasattr(result, "dict") else result
 
 @app.post("/step")
 async def step(request: Request):
@@ -109,7 +124,9 @@ async def step(request: Request):
         data = await request.json() if body else {}
     except:
         data = {}
-    return env.step(data)
+    result = env.step(data)
+    # Safely convert to dict for Phase 1 API
+    return result.dict() if hasattr(result, "dict") else result
 
 @app.get("/state")
 def state():
