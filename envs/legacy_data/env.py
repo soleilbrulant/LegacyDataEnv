@@ -1,9 +1,9 @@
 import sqlite3
-from typing import Any
-from openenv.core.env_server import State
-from openenv.core.client_types import StepResult
-from .models import LegacyAction, LegacyObservation
+from typing import Any, Optional
+from fastapi import FastAPI, Request
+from pydantic import BaseModel
 
+# --- THE ENGINE ---
 class LegacyDataEnvironment:
     def __init__(self):
         self.db_path = ":memory:"
@@ -13,49 +13,32 @@ class LegacyDataEnvironment:
         self.episode_id = "legacy-eval-001"
 
     def _setup_legacy_db(self):
-        """Phase 1 Sandbox code injected directly into the engine."""
         cursor = self.conn.cursor()
-        
-        # Easy Task Data
         cursor.execute("CREATE TABLE usr_accnts (id INTEGER PRIMARY KEY, username TEXT, balance_str TEXT)")
         cursor.executemany("INSERT INTO usr_accnts (username, balance_str) VALUES (?, ?)", 
                            [('alice_99', '$1500.50'), ('bob_smith', '€2450.00'), ('charlie_x', '£89.99'), ('david_d', '$3450.75')])
-        
-        # Medium Task Data
         cursor.execute("CREATE TABLE inventory (id INTEGER PRIMARY KEY, item_name TEXT, stock_count INTEGER)")
         cursor.executemany("INSERT INTO inventory (item_name, stock_count) VALUES (?, ?)", 
                            [('MacBook Pro', 15), ('macbook pro', 42), ('Dell XPS', 8), ('dell xps', 2)])
-        
-        # Hard Task Data (Strict FKs enabled)
         cursor.execute("PRAGMA foreign_keys = ON;")
         cursor.execute("CREATE TABLE customers (customer_id INTEGER PRIMARY KEY, name TEXT)")
         cursor.execute("INSERT INTO customers (name) VALUES ('Tech Corp'), ('Global Web')")
         cursor.execute("CREATE TABLE transactions (transaction_id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL, FOREIGN KEY(customer_id) REFERENCES customers(customer_id))")
         cursor.execute("INSERT INTO transactions (transaction_id, customer_id, amount) VALUES (101, 1, 5000.0), (102, 2, 300.5)")
-        
         self.conn.commit()
 
-    def reset(self, task_level: str = "easy") -> LegacyObservation:
-        """The Big Red Button. Wipes memory and rebuilds the dirty database."""
+    def reset(self, task_level: str = "easy"):
         self.task_level = task_level
         self.step_count = 0
-        
-        if self.conn:
-            self.conn.close()
-            
+        if self.conn: self.conn.close()
         self.conn = sqlite3.connect(self.db_path)
         self._setup_legacy_db()
-        
-        return LegacyObservation(
-            success=True, 
-            feedback=f"Legacy DB connected. Task level: {task_level}. You may begin executing SQL."
-        )
+        return {"success": True, "feedback": f"Connected. Level: {task_level}"}
 
     def step(self, action_data):
         self.step_count += 1
         
         # --- THE PHASE 2 FIX ---
-        # If inference.py passes a Pydantic model, convert it to a dict safely.
         if hasattr(action_data, "dict"):
             action_data = action_data.dict()
         elif hasattr(action_data, "model_dump"): 
@@ -85,61 +68,49 @@ class LegacyDataEnvironment:
             return {"observation": {"success": True, "feedback": f"Done. Score: {reward}"}, "reward": reward, "done": True}
         
         return {"observation": {"success": False, "error_message": "Invalid action"}, "reward": 0.0, "done": False}
-    def state(self) -> State:
-        return State(episode_id=self.episode_id, step_count=self.step_count)
 
     def _grade_task(self, answer: str) -> float:
-        """Evaluates the database state and assigns a score from 0.0 to 1.0"""
         cursor = self.conn.cursor()
-        score = 0.0
-
         try:
-            # --- EASY TASK: Reconnaissance ---
             if self.task_level == "easy":
-                # The highest balance is David D ($3450.75). We check the agent's submitted string.
-                if answer and ("3450.75" in answer or "3450" in answer):
-                    return 1.0
-                return 0.0
-
-            # --- MEDIUM TASK: Data Rescue ---
+                return 1.0 if answer and ("3450.75" in answer) else 0.0
             elif self.task_level == "medium":
-                cursor.execute("SELECT COUNT(*) FROM inventory;")
-                total_rows = cursor.fetchone()[0]
-                
-                if total_rows == 4:
-                    return 0.0 # Agent did nothing
-                
-                if total_rows == 2:
-                    score += 0.5 # 50% partial credit for reducing rows to 2
-                    
-                    # Did they keep the right ones? (macbook pro: 42, Dell XPS: 8. Total = 50)
-                    cursor.execute("SELECT SUM(stock_count) FROM inventory;")
-                    total_stock = cursor.fetchone()[0]
-                    if total_stock == 50:
-                        score += 0.5 # 100% credit!
-                return score
-
-            # --- HARD TASK: Schema Migration ---
+                cursor.execute("SELECT COUNT(*) FROM inventory;"); rows = cursor.fetchone()[0]
+                cursor.execute("SELECT SUM(stock_count) FROM inventory;"); stock = cursor.fetchone()[0]
+                return 1.0 if (rows == 2 and stock == 50) else (0.5 if rows == 2 else 0.0)
             elif self.task_level == "hard":
-                # 1. Did the table survive the migration?
-                cursor.execute("PRAGMA table_info(transactions);")
-                columns = cursor.fetchall()
-                
-                # 2. Did they successfully change transaction_id to a text-based UUID field?
-                for col in columns:
-                    if col[1] == 'transaction_id':
-                        if 'TEXT' in col[2].upper() or 'VARCHAR' in col[2].upper():
-                            score += 0.5 # 50% partial credit for the schema change
-                
-                # 3. Did the original data survive the migration without violating foreign keys?
-                cursor.execute("SELECT COUNT(*) FROM transactions;")
-                if cursor.fetchone()[0] == 2:
-                    score += 0.5 # 100% credit!
-                    
-                return score
-                
-        except sqlite3.Error:
-            # If the agent corrupted the DB so badly that our grader queries fail, they get a 0.
-            return 0.0
-            
-        return score
+                cursor.execute("PRAGMA table_info(transactions);"); cols = cursor.fetchall()
+                type_ok = any('TEXT' in c[2].upper() for c in cols if c[1] == 'transaction_id')
+                cursor.execute("SELECT COUNT(*) FROM transactions;"); count_ok = cursor.fetchone()[0] == 2
+                return 1.0 if (type_ok and count_ok) else (0.5 if type_ok else 0.0)
+        except: return 0.0
+        return 0.0
+
+# --- FASTAPI SERVER ---
+app = FastAPI()
+env = LegacyDataEnvironment()
+
+@app.get("/")
+def home(): return {"status": "running"}
+
+@app.post("/reset")
+async def reset(request: Request):
+    try:
+        body = await request.body()
+        data = await request.json() if body else {}
+    except:
+        data = {}
+    return env.reset(task_level=data.get("task_level", "easy"))
+
+@app.post("/step")
+async def step(request: Request):
+    try:
+        body = await request.body()
+        data = await request.json() if body else {}
+    except:
+        data = {}
+    return env.step(data)
+
+@app.get("/state")
+def state():
+    return {"episode_id": env.episode_id, "step_count": env.step_count}
