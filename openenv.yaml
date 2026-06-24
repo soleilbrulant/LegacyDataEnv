@@ -1,4 +1,6 @@
 name: legacy-data-env
 description: "A chaotic, legacy SQLite database simulation for training AI agents in DataOps and Schema Migration."
 version: "1.0.0"
-entrypoint: envs.legacy_data.env:LegacyDataEnvironment
+# Bug Fix: entrypoint must point to the FastAPI app object, not the Environment class
+# The validator discovers the server via this app object
+entrypoint: server.app:app

@@ -1,61 +1,159 @@
 import sqlite3
 from typing import Any, Optional
-from fastapi import FastAPI, Request
-from pydantic import BaseModel
+from uuid import uuid4
 
-# Import the official OpenEnv types
-from openenv.core.client_types import StepResult
-from .models import LegacyObservation
+# Bug Fix #2: Import the Environment abstract base class and proper types
+from openenv.core.env_server.interfaces import Environment
+from openenv.core.env_server.types import State
+
+from .models import LegacyAction, LegacyObservation, LegacyState
+
 
 # --- THE ENGINE ---
-class LegacyDataEnvironment:
-    def __init__(self):
-        self.db_path = ":memory:"
-        self.conn = None
-        self.step_count = 0
-        self.task_level = "easy"
-        self.episode_id = "legacy-eval-001"
+# Bug Fix #3: Extend Environment[Action, Observation, State] instead of plain class
+# Bug Fix #4: Implementing the required abstract `state` property
+class LegacyDataEnvironment(Environment[LegacyAction, LegacyObservation, LegacyState]):
+    """
+    An advanced, real-world OpenEnv environment simulating a chaotic, 10-year-old
+    legacy SQLite database. Designed to test an AI agent's ability to act as a
+    backend reliability engineer.
 
-    def _setup_legacy_db(self):
+    Tasks:
+      - Easy:   Extract max values from columns contaminated with mixed currency symbols.
+      - Medium: Case-insensitive deduplication retaining rows with max stock_count.
+      - Hard:   Migrate integer PK to TEXT UUID without violating FK constraints.
+    """
+
+    SUPPORTS_CONCURRENT_SESSIONS: bool = True
+
+    def __init__(self):
+        super().__init__()
+        self.db_path = ":memory:"
+        self.conn: Optional[sqlite3.Connection] = None
+        self._state = LegacyState(
+            episode_id=str(uuid4()),
+            step_count=0,
+            task_level="easy",
+        )
+        # Auto-initialize DB so the environment is ready immediately
+        # check_same_thread=False is required because uvicorn runs sync code in a
+        # thread pool executor — the connection must be usable across threads
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._setup_legacy_db()
+
+    # ------------------------------------------------------------------
+    # Bug Fix #4: Implement the abstract `state` property
+    # ------------------------------------------------------------------
+    @property
+    def state(self) -> LegacyState:
+        return self._state
+
+    # ------------------------------------------------------------------
+    # Internal DB setup
+    # ------------------------------------------------------------------
+    def _setup_legacy_db(self) -> None:
         cursor = self.conn.cursor()
-        cursor.execute("CREATE TABLE usr_accnts (id INTEGER PRIMARY KEY, username TEXT, balance_str TEXT)")
-        cursor.executemany("INSERT INTO usr_accnts (username, balance_str) VALUES (?, ?)", 
-                           [('alice_99', '$1500.50'), ('bob_smith', '€2450.00'), ('charlie_x', '£89.99'), ('david_d', '$3450.75')])
-        cursor.execute("CREATE TABLE inventory (id INTEGER PRIMARY KEY, item_name TEXT, stock_count INTEGER)")
-        cursor.executemany("INSERT INTO inventory (item_name, stock_count) VALUES (?, ?)", 
-                           [('MacBook Pro', 15), ('macbook pro', 42), ('Dell XPS', 8), ('dell xps', 2)])
+
+        # Easy task table — balance contaminated with currency symbols
+        cursor.execute(
+            "CREATE TABLE usr_accnts (id INTEGER PRIMARY KEY, username TEXT, balance_str TEXT)"
+        )
+        cursor.executemany(
+            "INSERT INTO usr_accnts (username, balance_str) VALUES (?, ?)",
+            [
+                ("alice_99", "$1500.50"),
+                ("bob_smith", "€2450.00"),
+                ("charlie_x", "£89.99"),
+                ("david_d", "$3450.75"),
+            ],
+        )
+
+        # Medium task table — duplicates with different cases
+        cursor.execute(
+            "CREATE TABLE inventory (id INTEGER PRIMARY KEY, item_name TEXT, stock_count INTEGER)"
+        )
+        cursor.executemany(
+            "INSERT INTO inventory (item_name, stock_count) VALUES (?, ?)",
+            [
+                ("MacBook Pro", 15),
+                ("macbook pro", 42),
+                ("Dell XPS", 8),
+                ("dell xps", 2),
+            ],
+        )
+
+        # Hard task tables — FK relationship with integer PK to be migrated to TEXT
         cursor.execute("PRAGMA foreign_keys = ON;")
-        cursor.execute("CREATE TABLE customers (customer_id INTEGER PRIMARY KEY, name TEXT)")
-        cursor.execute("INSERT INTO customers (name) VALUES ('Tech Corp'), ('Global Web')")
-        cursor.execute("CREATE TABLE transactions (transaction_id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL, FOREIGN KEY(customer_id) REFERENCES customers(customer_id))")
-        cursor.execute("INSERT INTO transactions (transaction_id, customer_id, amount) VALUES (101, 1, 5000.0), (102, 2, 300.5)")
+        cursor.execute(
+            "CREATE TABLE customers (customer_id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        cursor.execute(
+            "INSERT INTO customers (name) VALUES ('Tech Corp'), ('Global Web')"
+        )
+        cursor.execute(
+            """CREATE TABLE transactions (
+                transaction_id INTEGER PRIMARY KEY,
+                customer_id INTEGER,
+                amount REAL,
+                FOREIGN KEY(customer_id) REFERENCES customers(customer_id)
+            )"""
+        )
+        cursor.execute(
+            "INSERT INTO transactions (transaction_id, customer_id, amount) "
+            "VALUES (101, 1, 5000.0), (102, 2, 300.5)"
+        )
         self.conn.commit()
 
-    def reset(self, task_level: str = "easy"):
-        self.task_level = task_level
-        self.step_count = 0
-        if self.conn: self.conn.close()
-        self.conn = sqlite3.connect(self.db_path)
-        self._setup_legacy_db()
-        # Return an object for Phase 2
-        return LegacyObservation(success=True, feedback=f"Connected. Level: {task_level}")
+    # ------------------------------------------------------------------
+    # Bug Fix: reset() signature matches Environment base class
+    # ------------------------------------------------------------------
+    def reset(
+        self,
+        seed: Optional[int] = None,
+        episode_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> LegacyObservation:
+        """Reset the environment. Accepts task_level in kwargs."""
+        task_level = kwargs.get("task_level", "easy")
 
-    def step(self, action_data):
-        self.step_count += 1
-        
-        # Safely handle inputs (Pydantic models OR dicts)
-        if hasattr(action_data, "dict"):
-            action_dict = action_data.dict()
-        elif hasattr(action_data, "model_dump"): 
-            action_dict = action_data.model_dump()
-        elif isinstance(action_data, dict):
-            action_dict = action_data
-        else:
-            action_dict = {}
-            
-        action_type = action_dict.get("action_type")
-        sql_query = action_dict.get("sql_query", "")
-        answer = action_dict.get("answer", "")
+        self._state = LegacyState(
+            episode_id=episode_id or str(uuid4()),
+            step_count=0,
+            task_level=task_level,
+        )
+
+        if self.conn:
+            self.conn.close()
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._setup_legacy_db()
+
+        return LegacyObservation(
+            success=True,
+            feedback=f"Connected. Level: {task_level}. DB ready.",
+            done=False,
+            reward=0.0,
+        )
+
+    # ------------------------------------------------------------------
+    # Bug Fix #2: step() returns LegacyObservation (not StepResult)
+    # Bug Fix: step() signature matches Environment base class
+    # ------------------------------------------------------------------
+    def step(
+        self,
+        action: LegacyAction,
+        timeout_s: Optional[float] = None,
+        **kwargs: Any,
+    ) -> LegacyObservation:
+        """Execute a step. action_type can be 'execute_sql' or 'submit_solution'."""
+        self._state.step_count += 1
+
+        # Handle both Pydantic models and raw dicts (for HTTP deserialization)
+        if isinstance(action, dict):
+            action = LegacyAction(**action)
+
+        action_type = action.action_type
+        sql_query = action.sql_query or ""
+        answer = action.answer or ""
 
         if action_type == "execute_sql":
             try:
@@ -63,69 +161,86 @@ class LegacyDataEnvironment:
                 cursor.execute("PRAGMA foreign_keys = ON;")
                 cursor.execute(sql_query)
                 if sql_query.strip().upper().startswith("SELECT"):
-                    columns = [col[0] for col in cursor.description] if cursor.description else []
+                    columns = (
+                        [col[0] for col in cursor.description]
+                        if cursor.description
+                        else []
+                    )
                     data = [dict(zip(columns, row)) for row in cursor.fetchall()]
                 else:
                     self.conn.commit()
                     data = []
-                obs = LegacyObservation(success=True, data=data)
-                # Changed 0.0 to 0.01 for strict validation
-                return StepResult(observation=obs, reward=0.01, done=False)
+                return LegacyObservation(
+                    success=True,
+                    data=data,
+                    done=False,
+                    reward=0.01,
+                )
             except Exception as e:
-                obs = LegacyObservation(success=False, error_message=str(e))
-                return StepResult(observation=obs, reward=0.01, done=False)
-        
-        elif action_type == "submit_solution":
-            reward = self._grade_task(answer)
-            obs = LegacyObservation(success=True, feedback=f"Done. Score: {reward}")
-            return StepResult(observation=obs, reward=reward, done=True)
-        
-        obs = LegacyObservation(success=False, error_message="Invalid action")
-        return StepResult(observation=obs, reward=0.01, done=False)
+                return LegacyObservation(
+                    success=False,
+                    error_message=str(e),
+                    done=False,
+                    reward=0.0,
+                )
 
+        elif action_type == "submit_solution":
+            # Bug Fix #6: reward ceiling raised to 1.0 so success=true is possible
+            reward = self._grade_task(answer)
+            return LegacyObservation(
+                success=True,
+                feedback=f"Graded. Score: {reward:.2f}",
+                done=True,
+                reward=reward,
+            )
+
+        return LegacyObservation(
+            success=False,
+            error_message="Invalid action_type. Use 'execute_sql' or 'submit_solution'.",
+            done=False,
+            reward=0.0,
+        )
+
+    # ------------------------------------------------------------------
+    # Grader — Bug Fix #6: returns 1.0 (not 0.99) so success check passes
+    # ------------------------------------------------------------------
     def _grade_task(self, answer: str) -> float:
         cursor = self.conn.cursor()
         try:
-            if self.task_level == "easy":
-                # Changed 1.0 to 0.99 and 0.0 to 0.01
-                return 0.99 if answer and ("3450.75" in answer) else 0.01
-            elif self.task_level == "medium":
-                cursor.execute("SELECT COUNT(*) FROM inventory;"); rows = cursor.fetchone()[0]
-                cursor.execute("SELECT SUM(stock_count) FROM inventory;"); stock = cursor.fetchone()[0]
-                return 0.99 if (rows == 2 and stock == 50) else (0.5 if rows == 2 else 0.01)
-            elif self.task_level == "hard":
-                cursor.execute("PRAGMA table_info(transactions);"); cols = cursor.fetchall()
-                type_ok = any('TEXT' in c[2].upper() for c in cols if c[1] == 'transaction_id')
-                cursor.execute("SELECT COUNT(*) FROM transactions;"); count_ok = cursor.fetchone()[0] == 2
-                return 0.99 if (type_ok and count_ok) else (0.5 if type_ok else 0.01)
-        except: return 0.01
-        return 0.01
+            if self._state.task_level == "easy":
+                # Agent must identify that 3450.75 is the max numeric value
+                return 1.0 if answer and ("3450.75" in answer) else 0.0
 
-# --- FASTAPI SERVER ---
-app = FastAPI()
-env = LegacyDataEnvironment()
+            elif self._state.task_level == "medium":
+                # After dedup: 2 canonical rows (MacBook Pro=42, Dell XPS=8) → sum=50
+                cursor.execute("SELECT COUNT(*) FROM inventory;")
+                rows = cursor.fetchone()[0]
+                cursor.execute("SELECT SUM(stock_count) FROM inventory;")
+                stock = cursor.fetchone()[0]
+                if rows == 2 and stock == 50:
+                    return 1.0
+                elif rows == 2:
+                    return 0.5
+                else:
+                    return 0.0
 
-@app.get("/")
-def home(): return {"status": "running"}
+            elif self._state.task_level == "hard":
+                # Check transaction_id column is now TEXT, and both rows still exist
+                cursor.execute("PRAGMA table_info(transactions);")
+                cols = cursor.fetchall()
+                type_ok = any(
+                    "TEXT" in c[2].upper() for c in cols if c[1] == "transaction_id"
+                )
+                cursor.execute("SELECT COUNT(*) FROM transactions;")
+                count_ok = cursor.fetchone()[0] == 2
+                if type_ok and count_ok:
+                    return 1.0
+                elif type_ok:
+                    return 0.5
+                else:
+                    return 0.0
 
-@app.post("/reset")
-async def reset(request: Request):
-    try:
-        body = await request.body()
-        data = await request.json() if body else {}
-    except:
-        data = {}
-    result = env.reset(task_level=data.get("task_level", "easy"))
-    # Safely convert to dict for Phase 1 API
-    return result.dict() if hasattr(result, "dict") else result
+        except Exception:
+            return 0.0
 
-@app.post("/step")
-async def step(request: Request):
-    try:
-        body = await request.body()
-        data = await request.json() if body else {}
-    except:
-        data = {}
-    result = env.step(data)
-    # Safely convert to dict for Phase 1 API
-    return result.dict() if hasattr(result, "dict") else result
+        return 0.0

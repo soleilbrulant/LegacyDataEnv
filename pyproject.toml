@@ -8,16 +8,18 @@ version = "0.1.0"
 authors = [{name = "Shashwat Verma"}]
 description = "RL environment for legacy database migration."
 dependencies = [
-    "openenv-core>=0.1.13",
+    "openenv-core>=0.3.0",
     "numpy",
-    "pydantic",
-    "fastapi",
-    "uvicorn",
+    "pydantic>=2.0.0",
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.20.0",
+    "openai>=1.0.0",
 ]
 requires-python = ">=3.10"
 
 [project.scripts]
-openenv-server = "server.app:main"
+# 'server' is the key the openenv validator specifically looks for
+server = "server.app:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
