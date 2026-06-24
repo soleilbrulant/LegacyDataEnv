@@ -1,6 +1,16 @@
+---
+title: LegacyDataEnv
+emoji: 🗄️
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # LegacyDataEnv 🗄️
 
-An advanced, real-world OpenEnv environment simulating a chaotic, 10-year-old legacy SQLite database. Designed to test an AI agent's ability to act as a backend reliability engineer. 
+An advanced, real-world OpenEnv environment simulating a chaotic, 10-year-old legacy SQLite database. Designed to test an AI agent's ability to act as a backend reliability engineer.
 
 Unlike standard "text-to-SQL" toys, this environment forces agents to handle dirty data, mixed types, and strict foreign key constraints, using a dense partial-reward grading algorithm.
 
@@ -22,4 +32,5 @@ Unlike standard "text-to-SQL" toys, this environment forces agents to handle dir
 ## Local Setup
 ```bash
 pip install -r requirements.txt
-python test_inference.py
+python inference.py
+```
